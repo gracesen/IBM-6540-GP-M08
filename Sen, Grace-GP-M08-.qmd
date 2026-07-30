@@ -1,0 +1,476 @@
+---
+title: "Reflection on Regression and Classification Models with Group Project Data"
+subtitle: "Analytics Objective: Predict spending of a customer at an e-commerce site"
+author: "Grace Sen"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-expand: 1
+    toc-location: right-body
+    toc-title: "Contents"
+    number-sections: true
+    code-fold: show
+    code-tools: true
+    theme: cosmo
+    highlight-style: github
+    df-print: kable
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+  freeze: true
+---
+
+# Introduction
+
+## Project Overview
+
+This project applies supervised machine learning techniques to predict whether a customer will convert in a digital marketing campaign. Using the Digital Marketing Campaign Dataset, the analysis follows the complete tidymodels workflow, including data preparation, model training, evaluation, and comparison. The goal is to identify the model that best predicts customer conversion and to understand which customer and campaign characteristics contribute most to conversion.
+
+## Analytics Objective
+
+The analytics objective is to predict whether a customer will convert after being exposed to a digital marketing campaign. Accurate predictions can help marketers identify high-potential customers, improve campaign targeting, and allocate marketing resources more effectively.
+
+## Machine Learning Task
+
+-   **Learning type:** Supervised learning
+-   **Outcome variable:** `Conversion`
+-   **Feature variables:** Customer demographics, campaign characteristics, website engagement, email activity, purchase history, and advertising information
+-   **Machine learning category:** Classification
+-   **Selected codebook:** Module 5 – Classification Models
+
+::: callout-note
+Because the outcome variable, **Conversion**, has two possible values (0 = No, 1 = Yes), this project is a binary classification problem.
+:::
+
+# Data Preparation
+
+## Load Libraries
+
+The analysis uses the **tidymodels** framework for machine learning, along with several supporting packages for data manipulation, visualization, and model interpretation.
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(skimr)
+library(kableExtra)
+library(ranger)
+
+tidymodels_prefer()
+```
+
+## Load Dataset
+
+The dataset contains customer demographics, campaign characteristics, online engagement, email activity, purchase history, and a binary conversion outcome.
+
+```{r}
+marketing <- read_csv("~/Documents/IBM6540/Group_Project/dataset/digital_marketing_campaign_dataset.csv")
+```
+
+## Clean the Data
+
+```{r}
+marketing <- marketing %>%
+  mutate(
+    Conversion = factor(Conversion),
+    Gender = factor(Gender),
+    CampaignType = factor(CampaignType),
+    CampaignChannel = factor(CampaignChannel),
+    AdvertisingPlatform = factor(AdvertisingPlatform),
+    AdvertisingTool = factor(AdvertisingTool)
+  )
+
+marketing <- marketing %>%
+  select(-CustomerID)
+```
+
+## Explore the Dataset
+
+Before building any models, it is important to understand the structure of the dataset.
+
+```{r}
+glimpse(marketing)
+```
+
+```{r}
+summary(marketing)
+```
+
+```{r}
+skimr::skim(marketing)
+```
+
+## Check Missing Values
+
+The dataset should be checked for missing values before preprocessing.
+
+```{r}
+marketing %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(),
+               names_to = "Variable",
+               values_to = "Missing_Values") %>%
+  filter(Missing_Values > 0)
+```
+
+::: callout-tip
+The dataset contains **8,000 observations** and **20 variables**. The outcome variable is **Conversion**, while the remaining variables describe customer demographics, campaign information, customer engagement, and purchase history. Based on the missing value check, the dataset contains little or no missing data, so only minimal preprocessing is required.
+:::
+
+# Machine Learning Workflow
+
+## Data Splitting
+
+### Split the Data into Training and Testing Sets
+
+```{r}
+set.seed(123)
+
+marketing_split <- initial_split(
+  marketing,
+  prop = 0.8,
+  strata = Conversion
+)
+
+marketing_train <- training(marketing_split)
+marketing_test  <- testing(marketing_split)
+```
+
+### Training and Testing Dataset Sizes
+
+```{r}
+tibble(
+  Dataset = c("Training", "Testing"),
+  Observations = c(
+    nrow(marketing_train),
+    nrow(marketing_test)
+  )
+)
+```
+
+### Class Distribution in the Training Set
+
+```{r}
+marketing_train %>%
+  count(Conversion) %>%
+  mutate(
+    Percent = scales::percent(n / sum(n))
+  )
+```
+
+### Class Distribution in the Testing Set
+
+```{r}
+marketing_test %>%
+  count(Conversion) %>%
+  mutate(
+    Percent = scales::percent(n / sum(n))
+  )
+```
+
+::: callout-tip
+A stratified split preserves the proportion of converted and non-converted customers in both the training and testing datasets. This helps ensure that the model is trained and evaluated on data with similar class distributions.
+:::
+
+## Data Preprocessing
+
+Before fitting the models, the predictor variables are preprocessed using a recipe. The recipe standardizes numeric variables, converts categorical variables into dummy variables, and removes any predictors with zero variance. These steps help prepare the data for machine learning while ensuring the same preprocessing is applied to both the training and testing datasets.
+
+### Create the Recipe
+
+```{r}
+marketing_recipe <-
+  recipe(Conversion ~ ., data = marketing_train) %>%
+  step_rm(AdvertisingPlatform, AdvertisingTool) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+```
+
+### Prepare the Recipe
+
+```{r}
+marketing_prep <- prep(marketing_recipe)
+```
+
+### Review the Recipe
+
+```{r}
+marketing_prep
+```
+
+::: callout-note
+### Why use a recipe?
+
+A **recipe** creates a consistent preprocessing workflow for the data. In this project, it removes constant predictors, normalizes numeric variables, creates dummy variables for categorical predictors, and removes any zero-variance features. The recipe is **prepped** using only the training data and then automatically applied to both the training and testing datasets through the workflow, helping prevent data leakage.
+:::
+
+# Model 1: Logistic Regression
+
+## Why Logistic Regression?
+
+Logistic regression was selected as the first machine learning model because the outcome variable, **Conversion**, is binary (0 = No, 1 = Yes). It estimates the probability that a customer will convert based on customer demographics, campaign characteristics, engagement behavior, and purchase history. In addition, logistic regression is easy to interpret and provides a strong baseline for comparing more complex models.
+
+::: callout-note
+Logistic regression is widely used for binary classification problems because it predicts probabilities between 0 and 1 while providing interpretable relationships between predictors and the outcome.
+:::
+
+## Model Specification
+
+### Specify the Logistic Regression Model
+
+```{r}
+log_spec <-
+  logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+### Create the Workflow
+
+```{r}
+log_workflow <-
+  workflow() %>%
+  add_recipe(marketing_recipe) %>%
+  add_model(log_spec)
+```
+
+### Fit the Logistic Regression Model
+
+```{r}
+log_fit <-
+  fit(
+    log_workflow,
+    data = marketing_train
+  )
+```
+
+### Review Model Coefficients
+
+```{r}
+tidy(extract_fit_parsnip(log_fit))
+```
+
+### Interpretation
+
+The logistic regression results show that several marketing engagement variables, including **AdSpend, ClickThroughRate, WebsiteVisits, TimeOnSite, EmailOpens, EmailClicks, PreviousPurchases, and LoyaltyPoints**, are significant predictors of customer conversion. Positive coefficients indicate a higher likelihood of conversion, while negative coefficients indicate a lower likelihood. Several demographic and campaign variables were not statistically significant, suggesting they have less influence on conversion in this model.
+
+# Model 2: Random Forest
+
+## Why Random Forest?
+
+Random Forest was selected as an alternative machine learning model because it can capture complex and nonlinear relationships among variables. Unlike logistic regression, Random Forest combines predictions from many decision trees, which often improves predictive performance while reducing overfitting. Comparing Random Forest with Logistic Regression helps determine whether the added model complexity leads to better classification performance.
+
+::: callout-note
+Both models use the same training data and preprocessing recipe. This allows the comparison to focus on differences between the models rather than differences in data preparation.
+:::
+
+## Model Specification
+
+### Specify the Random Forest Model
+
+```{r}
+rf_spec <-
+  rand_forest(
+    trees = 500
+  ) %>%
+  set_engine(
+    "ranger",
+    importance = "impurity"
+  ) %>%
+  set_mode("classification")
+```
+
+### Create the Workflow
+
+```{r}
+rf_workflow <-
+  workflow() %>%
+  add_recipe(marketing_recipe) %>%
+  add_model(rf_spec)
+```
+
+### Fit the Random Forest Model
+
+```{r}
+rf_fit <-
+  fit(
+    rf_workflow,
+    data = marketing_train
+  )
+```
+
+### Review the Model
+
+```{r}
+rf_fit
+```
+
+### Interpretation
+
+The Random Forest model was successfully trained using 500 decision trees. Each tree is built using a different random sample of the training data and a random subset of predictors. The final prediction is based on the combined predictions of all trees, which helps improve predictive performance while reducing the risk of overfitting.
+
+# Model Comparison
+
+## 10-Fold Cross-Validation
+
+To compare model performance fairly, both models were evaluated using 10-fold cross-validation. This approach repeatedly splits the training data into training and validation folds, providing a more reliable estimate of model performance than a single train/test split.
+
+### Create 10-Fold Cross-Validation
+
+```{r}
+set.seed(123)
+
+marketing_folds <-
+  vfold_cv(
+    marketing_train,
+    v = 10,
+    strata = Conversion
+  )
+```
+
+### Cross-Validate Logistic Regression
+
+```{r}
+log_cv <-
+  fit_resamples(
+    log_workflow,
+    resamples = marketing_folds,
+    metrics = metric_set(
+      accuracy,
+      roc_auc,
+      sens,
+      spec
+    )
+  )
+```
+
+### Cross-Validate Random Forest
+
+```{r}
+rf_cv <-
+  fit_resamples(
+    rf_workflow,
+    resamples = marketing_folds,
+    metrics = metric_set(
+      accuracy,
+      roc_auc,
+      sens,
+      spec
+    )
+  )
+```
+
+### Logistic Regression Performance
+
+```{r}
+collect_metrics(log_cv)
+```
+
+### Random Forest Performance
+
+```{r}
+collect_metrics(rf_cv)
+```
+
+### Compare Model Performance
+
+```{r}
+bind_rows(
+  collect_metrics(log_cv) %>%
+    mutate(Model = "Logistic Regression"),
+  collect_metrics(rf_cv) %>%
+    mutate(Model = "Random Forest")
+) %>%
+  select(Model, .metric, mean, std_err)
+```
+
+## Interpretation
+
+Both models performed well in predicting customer conversion, but each showed different strengths. The **Random Forest** model achieved a higher **ROC AUC (0.825)**, indicating that it was better at distinguishing between customers who converted and those who did not. In contrast, **Logistic Regression** achieved slightly higher **accuracy (89.4%)** and **sensitivity (21.8%)**, meaning it identified more actual conversions.
+
+Overall, **Random Forest** was selected as the better model because ROC AUC is a more informative metric for an imbalanced classification problem like customer conversion. Its higher ROC AUC suggests that it has stronger overall classification performance and is more likely to generalize well to new customer data.
+
+::: callout-note
+Although Logistic Regression achieved slightly higher accuracy, **ROC AUC** was used as the primary metric because the dataset is imbalanced. ROC AUC evaluates the model across all classification thresholds and provides a more reliable measure of overall performance.
+:::
+
+# Feature Importance
+
+## Variable Importance
+
+Feature importance was extracted from the Random Forest model using the impurity importance scores provided by the `ranger` engine. Variables with higher importance values contribute more to predicting customer conversion.
+
+### Extract Variable Importance
+
+```{r}
+rf_importance <-
+  tibble(
+    Variable = names(extract_fit_engine(rf_fit)$variable.importance),
+    Importance = extract_fit_engine(rf_fit)$variable.importance
+  ) %>%
+  arrange(desc(Importance))
+
+rf_importance
+```
+
+### Plot Feature Importance
+
+```{r}
+rf_importance %>%
+  slice_max(Importance, n = 10) %>%
+  ggplot(aes(
+    x = reorder(Variable, Importance),
+    y = Importance
+  )) +
+  geom_col(fill = "lightblue") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Most Important Features",
+    x = "Feature",
+    y = "Variable Importance"
+  ) +
+  theme_minimal()
+```
+
+## Interpretation
+
+The feature importance results indicate that **PagesPerVisit**, **TimeOnSite**, **AdSpend**, and **ClickThroughRate** are the strongest predictors of customer conversion. Customer engagement variables, such as website visits, email opens, email clicks, previous purchases, and loyalty points, also rank highly, suggesting that customers who interact more with marketing campaigns are more likely to convert.
+
+Overall, the results are reasonable because customer engagement and campaign performance are expected to have a stronger influence on conversion than demographic characteristics alone. These findings suggest that marketers should focus on increasing customer engagement and optimizing campaign performance to improve conversion rates.
+
+::: callout-note
+The Random Forest model identifies which variables contribute most to prediction accuracy, but feature importance does not indicate whether a variable has a positive or negative effect on conversion. Logistic Regression coefficients are better suited for interpreting the direction of each relationship.
+:::
+
+# Reflection
+
+## Why was Logistic Regression a good baseline?
+
+Logistic Regression was a good baseline because it is simple, easy to interpret, and well suited for binary classification problems like predicting customer conversion. It also helped identify which customer and marketing variables were significantly associated with conversion, making it a useful benchmark for comparing more complex models.
+
+## Why did Random Forest perform differently?
+
+Random Forest achieved a higher ROC AUC because it can capture complex relationships and interactions between variables that Logistic Regression may not detect. Although Logistic Regression had slightly higher accuracy and sensitivity, Random Forest provided better overall classification performance, making it the stronger model for this dataset.
+
+## Limitations
+
+One limitation of this analysis is that it only used the variables available in the dataset. Customer conversion may also be influenced by factors such as customer preferences, seasonality, or previous campaign history, which were not included. In addition, feature importance from Random Forest shows which variables are important but does not explain the direction of their effects.
+
+## Future Work
+
+Future work could focus on tuning the Random Forest hyperparameters to improve model performance. Additional machine learning models, such as XGBoost or LightGBM, could also be evaluated and compared using cross-validation. Incorporating more customer behavior and marketing variables may further improve prediction accuracy.
+
+# Conclusion
+
+This project developed and compared two classification models, Logistic Regression and Random Forest, to predict customer conversion using a digital marketing campaign dataset. Both models achieved strong overall performance, with Random Forest producing the highest ROC AUC and providing valuable insights into the factors that influence customer conversion.
+
+The feature importance analysis showed that customer engagement variables, such as pages per visit, time on site, ad spend, and click-through rate, were the most influential predictors of conversion. These findings suggest that improving customer engagement and optimizing marketing campaigns can help increase conversion rates. Overall, this project demonstrates how machine learning can support marketing decision-making by providing accurate predictions and actionable business insights.
+
+# Appendix
+
+## GitHub Repository
+
+## GitHub Pages
